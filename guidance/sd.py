@@ -63,10 +63,15 @@ class StableDiffusion(nn.Module):
         guidance_scale=100, 
         grad_scale=1,
     ):
-        
         # TODO: Implement the loss function for SDS
-        raise NotImplementedError("SDS is not implemented yet.")
-    
+        t = torch.randint(1, self.num_train_timesteps + 1, (1,), device=self.device)
+        zt = torch.randn_like(latents).to(self.device)
+        xt = torch.sqrt(self.alphas[t-1]) * latents + torch.sqrt(1 - self.alphas[t-1]) * zt
+        noise_pred = self.get_noise_preds(xt, t, text_embeddings, guidance_scale=guidance_scale)
+        grad = 2 * (noise_pred - zt)
+        target = (latents - grad).detach()
+
+        return nn.functional.mse_loss(latents, target) * grad_scale
     
     def get_pds_loss(
         self, src_latents, tgt_latents, 
@@ -74,9 +79,24 @@ class StableDiffusion(nn.Module):
         guidance_scale=7.5, 
         grad_scale=1,
     ):
-        
         # TODO: Implement the loss function for PDS
-        raise NotImplementedError("PDS is not implemented yet.")
+        t = torch.randint(self.min_step, self.max_step + 1, (1,), device=self.device)
+        zt = torch.randn_like(src_latents)
+        zt_prev = torch.randn_like(src_latents)
+        alpha_t, alpha_t_prev, beta_t = self.alphas[t], self.alphas[t-1], self.scheduler.betas.to(self.device)[t]
+        xt_src = torch.sqrt(alpha_t) * src_latents + torch.sqrt(1 - alpha_t) * zt
+        xt_tgt = torch.sqrt(alpha_t) * tgt_latents + torch.sqrt(1 - alpha_t) * zt
+        xt_prev_src = torch.sqrt(alpha_t_prev) * src_latents + torch.sqrt(1 - alpha_t_prev) * zt_prev
+        xt_prev_tgt = torch.sqrt(alpha_t_prev) * tgt_latents + torch.sqrt(1 - alpha_t_prev) * zt_prev
+        sigma2 = (1-alpha_t_prev) * beta_t / (1-alpha_t)
+        mu_src = torch.sqrt(alpha_t_prev) * src_latents + torch.sqrt(1 - alpha_t_prev - sigma2) * self.get_noise_preds(xt_src, t, src_text_embedding, guidance_scale=guidance_scale)
+        mu_tgt = torch.sqrt(alpha_t_prev) * tgt_latents + torch.sqrt(1 - alpha_t_prev - sigma2) * self.get_noise_preds(xt_tgt, t, tgt_text_embedding, guidance_scale=guidance_scale)
+        zt_src = (xt_prev_src - mu_src) / torch.sqrt(sigma2)
+        zt_tgt = (xt_prev_tgt - mu_tgt) / torch.sqrt(sigma2)
+        grad = 2 * (zt_src - zt_tgt)
+        target = (tgt_latents - grad).detach()
+
+        return nn.functional.mse_loss(tgt_latents, target) * grad_scale
     
     
     @torch.no_grad()
